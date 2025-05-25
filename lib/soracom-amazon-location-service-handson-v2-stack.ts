@@ -2,6 +2,8 @@ import * as cdk from "aws-cdk-lib";
 import * as geo from "aws-cdk-lib/aws-location";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -16,7 +18,7 @@ export class SoracomAmazonLocationServiceHandsonV2Stack extends cdk.Stack {
     const soracomAccountId = '762707677580'; // Japan coverage
     // const soracomAccountId = '950858143650'; // Global coverage
     const externalId = 'soracomug'; // You'll need a longer value for practical use.
-    const lineNotifyToken = 'YOUR LINE NOTIFY TOKEN'
+    const notifyReceivedEmail = 'YOUR_EMAIL_ADDRESS@example.jp'
     const deviceId = 'Enter a device ID for you. Upper and lower case letters, numbers, hyphens, underscores, and dots are allowed, up to 100 characters.'
     
     /**
@@ -112,25 +114,15 @@ export class SoracomAmazonLocationServiceHandsonV2Stack extends cdk.Stack {
       batchUpdateDevicePositionPolicyStatement
     );
 
-    const geoFenceNotify = new lambda.Function(this, 'GeoFenceNotify', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: "geoFenceNotifyhandler.sendNotificationHandler",
-      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/')),
-      timeout: cdk.Duration.seconds(30),
-      tracing: lambda.Tracing.ACTIVE,
-      description: 'Amazon Location Service GeoFence Notify for LINE',
-      environment: {
-        LINE_NOTIFY_TOKEN: lineNotifyToken,
-      },
-    });
-
     /**
-     * SQS DLQ
+     * SNS
      */
-    const geoFenceEventsDlq = new sqs.Queue(
-      this,
-      'amazonLocationServiceGeoFenceEventDlq'
-    );
+    const getFanceEventsTopic = new sns.Topic(this,'GeoFenceEventTopic', {
+      topicName: 'GeoFenceEventTopic',
+      displayName: 'SORACOM x Amazon Location Serviceハンズオン',
+    });
+    getFanceEventsTopic.addSubscription(new subscriptions.EmailSubscription(notifyReceivedEmail));
+
     /**
      * EventBridge Events
      */
@@ -146,13 +138,17 @@ export class SoracomAmazonLocationServiceHandsonV2Stack extends cdk.Stack {
         },
       }
     );
-    geoFenceEventsRule.addTarget(
-      new targets.LambdaFunction(geoFenceNotify, {
-        deadLetterQueue: geoFenceEventsDlq,
-        maxEventAge: cdk.Duration.hours(2),
-        retryAttempts: 2,
-      })
-    );
+
+    geoFenceEventsRule.addTarget(new targets.SnsTopic(getFanceEventsTopic, {
+      message: events.RuleTargetInput.fromMultilineText(
+`デバイスがジオフェンスを入退出しました
+DeviceId: ${events.EventField.fromPath('$.detail.DeviceId')}
+GeoFence: ${events.EventField.fromPath('$.detail.GeofenceId')}
+EventType: ${events.EventField.fromPath('$.detail.EventType')}
+位置: https://www.google.com/maps?q=${events.EventField.fromPath('$.detail.Position[1]')},${events.EventField.fromPath('$.detail.Position[0]')}`
+      ),
+    }));
+
     /**
      * AWS IAM Authentication Information for SORACOM 
      */
